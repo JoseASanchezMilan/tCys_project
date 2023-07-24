@@ -1,0 +1,387 @@
+---
+title: "phopho"
+author: "Jose Antonio"
+date: "2022-11-29"
+output: html_document
+---
+
+```{r}
+library(org.Mm.eg.db)
+library(clusterProfiler)
+library(biomaRt)
+library(edgeR)
+library(tidyverse)
+setwd(".")
+
+datos = read.csv("only_s.csv", header = T, sep= "\t")
+
+ensembl = useMart("ensembl",dataset="mmusculus_gene_ensembl")
+
+ids = getBM(attributes = c("external_gene_name","uniprotswissprot","description"), 
+              filters = 'uniprotswissprot', 
+              values = datos$Protein.Accession, 
+              mart = ensembl)
+
+
+datos = merge(datos, ids, by.x = "Protein.Accession", by.y = "uniprotswissprot")
+
+datos$g24A = datos$X.Feature.M_24A + datos$X.Feature.F_24A
+datos$g24B = datos$X.Feature.M_24B + datos$X.Feature.F_24B
+datos$g24C = datos$X.Feature.M_24C + datos$X.Feature.F_24C
+datos$g18A = datos$X.Feature.M_18A + datos$X.Feature.F_18A
+datos$g18B = datos$X.Feature.M_18B + datos$X.Feature.F_18B
+datos$g18C = datos$X.Feature.M_18C + datos$X.Feature.F_18C
+datos$g06A = datos$X.Feature.M_06A + datos$X.Feature.F_06A
+datos$g06B = datos$X.Feature.M_06B + datos$X.Feature.F_06B
+datos$g06C= datos$X.Feature.M_06C + datos$X.Feature.F_06C
+datos$g01A = datos$X.Feature.M_01A + datos$X.Feature.F_01A
+datos$g01B = datos$X.Feature.M_01B + datos$X.Feature.F_01B
+datos$g01C = datos$X.Feature.M_01C + datos$X.Feature.F_01C
+
+uniq = unique(datos[c("external_gene_name","Peptide","g24A","g24B","g24C","g18A","g18B","g18C","g06A","g06B","g06C","g01A","g01B","g01C","description")])
+matriz = uniq[c("external_gene_name","g24A","g24B","g24C","g18A","g18B","g18C","g06A","g06B","g06C","g01A","g01B","g01C","description")]
+
+agrup2 = aggregate(matriz[,c("g24A","g24B","g24C","g18A","g18B","g18C","g06A","g06B","g06C","g01A","g01B","g01C")], by = list(matriz$external_gene_name), FUN = sum)
+
+
+#write.csv(agrup2, file = "data_1.csv")
+
+
+
+
+df_final = agrup2[,2:13]
+rownames(df_final) = agrup2[,1]
+
+groups = c("g24","g24","g24","g18","g18","g18","g06","g06","g06","g01","g01","g01")
+groups = factor(groups, levels = c("g24","g18","g06","g01"))
+design = model.matrix( ~ 0 + groups )
+colnames(design) = c("g24","g18","g06","g01")
+dge = DGEList(counts=df_final);
+dge = calcNormFactors(dge, method = "TMM")  
+v = voom(dge, design)
+fit = lmFit(v, design) 
+
+cont.matrix = makeContrasts(g24vg01 = g24 - g01, g18vg01 = g18-g01, g06vg01 = g06 - g01, g24vg06 = g24 - g06, g18vg06 = g18 - g06, levels=design)
+fit2 = contrasts.fit(fit, cont.matrix)
+fit2 =  eBayes(fit2, trend=FALSE)
+toptable = topTable(fit2, number = "all", confint=TRUE, adjust.method = "BH")
+
+
+table(toptable$P.Value < 0.05)
+sig_p = toptable[which(toptable$P.Value < 0.05),]
+up = sig_p[which(sig_p$g24vg01 > 0 & sig_p$g18vg01 > 0),]
+up$GS = rownames(up)
+up = merge(up, ids, by.x = "GS", by.y = "external_gene_name")
+
+#write.csv(up, file = "sig_up.csv")
+
+phospho = str_count(datos$AScore, "S[0-9]")
+datos$phospho = phospho
+
+new = datos[,c("external_gene_name","g24A","g24B","g24C","g18A","g18B","g18C","g06A","g06B","g06C","g01A","g01B","g01C" ,"phospho")]
+
+
+for(x in 1:nrow(new)){for (i in 2:ncol(new)){if (new[x,i] != 0){ new[x,i] = new$phospho[x]}}}
+
+agrup3 = aggregate(new[,c("g24A","g24B","g24C","g18A","g18B","g18C","g06A","g06B","g06C","g01A","g01B","g01C")], by = list(new$external_gene_name), FUN = sum)
+
+#write.csv(agrup3, file = "phospho_count.csv")
+
+skin = read.csv("triox_count_skin.csv", header = T)
+GS = rbind(c(skin$GS, agrup3$Group.1))
+dup = GS[duplicated(GS[1,])]
+skin_final = skin[skin$GS %in% dup,]
+skin_final = skin_final[order(skin_final$GS),]
+phospho_final = agrup3[agrup3$Group.1 %in% dup,]
+phospho_final = phospho_final[order(phospho_final$Group.1),]
+df_final_phospho = cbind(phospho_final, skin_final)
+
+#write.csv(df_final_phospho, file = "correlation_phospho.csv")
+#write.csv(datos, file = "datos_phospho_filtrados.csv")
+
+
+up$GS = rownames(up)
+df_final$GS = rownames(df_final)
+fil = up[up$GS == "Myh1" | up$GS == "Krt5" | up$GS == "Krt17" | up$GS == "Actn2", c("GS","F", "P.Value")]
+df_f = df_final[df_final$GS == "Myh1" | df_final$GS == "Krt5" | df_final$GS == "Krt17" | df_final$GS == "Actn2",]
+
+mean = sapply(seq(2, ncol(df_f), 3), function(j) apply(df_f[, j+(-1:1)],1,mean))
+sd = sapply(seq(2, ncol(df_f), 3), function(j) apply(df_f[, j+(-1:1)],1,sd))
+
+mean = as.data.frame(mean)
+sd = as.data.frame(sd)
+mean$GS = rownames(mean)
+sd$GS = rownames(sd)
+
+descriptive = merge(mean, sd, by ="GS")
+descriptive = merge(descriptive, fil, by ="GS")
+
+#write.csv(descriptive, file = "descriptive_phospho.csv")
+
+
+
+
+
+
+```
+
+
+```{r}
+proteins = read.csv("proteins.csv", header = T)
+
+proteins$g24A = proteins$X.Spec.M_24A + proteins$X.Spec.F_24A
+proteins$g24B = proteins$X.Spec.M_24B + proteins$X.Spec.F_24B
+proteins$g24C = proteins$X.Spec.M_24C + proteins$X.Spec.F_24C
+proteins$g18A = proteins$X.Spec.M_18A + proteins$X.Spec.F_18A
+proteins$g18B = proteins$X.Spec.M_18B + proteins$X.Spec.F_18B
+proteins$g18C = proteins$X.Spec.M_18C + proteins$X.Spec.F_18C
+proteins$g06A = proteins$X.Spec.M_06A + proteins$X.Spec.F_06A
+proteins$g06B = proteins$X.Spec.M_06B + proteins$X.Spec.F_06B
+proteins$g06C = proteins$X.Spec.M_06C + proteins$X.Spec.F_06C
+proteins$g01A = proteins$X.Spec.M_01A + proteins$X.Spec.F_01A
+proteins$g01B = proteins$X.Spec.M_01B + proteins$X.Spec.F_01B
+proteins$g01C = proteins$X.Spec.M_01C + proteins$X.Spec.F_01C
+
+matriz = proteins[c("Description","g24A","g24B","g24C","g18A","g18B","g18C","g06A","g06B","g06C","g01A","g01B","g01C")]
+
+
+agrup2 = aggregate(matriz[,c("g24A","g24B","g24C","g18A","g18B","g18C","g06A","g06B","g06C","g01A","g01B","g01C")], by = list(matriz$Description), FUN = sum)
+
+df_final = agrup2[,2:13]
+rownames(df_final) = agrup2[,1]
+
+#write.csv(df_final, file = "proteins_matrix.csv")
+
+groups = c("g24","g24","g24","g18","g18","g18","g06","g06","g06","g01","g01","g01")
+groups = factor(groups, levels = c("g24","g18","g06","g01"))
+design = model.matrix( ~ 0 + groups )
+colnames(design) = c("g24","g18","g06","g01")
+dge = DGEList(counts=df_final);
+dge = calcNormFactors(dge, method = "TMM")  
+v = voom(dge, design)
+fit = lmFit(v, design) 
+
+cont.matrix = makeContrasts(g24vg01 = g24 - g01, g18vg01 = g18-g01, g06vg01 = g06 - g01, g24vg06 = g24 - g06, g18vg06 = g18 - g06, levels=design)
+fit2 = contrasts.fit(fit, cont.matrix)
+fit2 =  eBayes(fit2, trend=FALSE)
+toptable = topTable(fit2, number = "all", confint=TRUE, adjust.method = "BH")
+
+table(toptable$P.Value < 0.05)
+sig_p = toptable[which(toptable$P.Value < 0.05),]
+up = sig_p[which(sig_p$g24vg01 > 0 & sig_p$g18vg01 > 0),]
+
+
+#write.csv(up, file = "sigup_proteins.csv")
+
+
+
+
+```
+
+
+```{r}
+
+skin_sig = read.csv(file = "sig_results_skin.csv", header = T)
+pos_skin = skin_sig[skin_sig$g24vg01 >0 & skin_sig$g18vg01 > 0,]
+GS = rbind(c(rownames(up), pos_skin$GS))
+dup = GS[duplicated(GS[1,])]
+
+peptides = datos[datos$external_gene_name == "Myh1" | datos$external_gene_name == "Krt17" | datos$external_gene_name == "Actn2" | datos$external_gene_name == "Krt5",]
+
+#write.csv(peptides[,c("Peptide", "Start", "external_gene_name", "AScore")], file = "phospho_peptides.csv")
+
+```
+
+```{r}
+skin = read.csv("prot_matches_sig_skin.csv", header = T)
+phospho = read.csv("data_1.csv", header = T)
+GS = rbind(c(skin$X, phospho$Group.1))
+dup = GS[duplicated(GS[1,])]
+skin_final = skin[skin$X %in% dup,]
+skin_final = skin_final[order(skin_final$X),]
+phospho_final = phospho[phospho$Group.1 %in% dup,]
+phospho_final = phospho_final[order(phospho_final$Group.1),]
+df_final = cbind(phospho_final, skin_final)
+
+#write.csv(df_final, file = "common_proteins_matrix.csv")
+```
+
+
+```{r}
+library(org.Mm.eg.db)
+library(clusterProfiler)
+library(biomaRt)
+library(edgeR)
+setwd(".")
+
+datos = read.csv("phospho_all_phos_1000.txt", header = T, sep= "\t")
+
+ensembl = useMart("ensembl",dataset="mmusculus_gene_ensembl")
+
+ids = getBM(attributes = c("external_gene_name","uniprotswissprot"), 
+              filters = 'uniprotswissprot', 
+              values = datos$Protein.Accession, 
+              mart = ensembl)
+
+
+datos = merge(datos, ids, by.x = "Protein.Accession", by.y = "uniprotswissprot")
+
+datos$g24A = datos$X.ACM.Feature.M.AF8.24A + datos$X.ACM.Feature.F.AF8.24A
+datos$g24B = datos$X.ACM.Feature.M.AF8.24B + datos$X.ACM.Feature.F.AF8.24B
+datos$g24C = datos$X.ACM.Feature.M.AF8.24C + datos$X.ACM.Feature.F.AF8.24C
+datos$g18A = datos$X.ACM.Feature.M.AF8.18A + datos$X.ACM.Feature.F.AF8.18A
+datos$g18B = datos$X.ACM.Feature.M.AF8.18B + datos$X.ACM.Feature.F.AF8.18B
+datos$g18C = datos$X.ACM.Feature.M.AF8.18C + datos$X.ACM.Feature.F.AF8.18C
+datos$g06A = datos$X.ACM.Feature.M.AF8.06A + datos$X.ACM.Feature.F.AF8.06A
+datos$g06B = datos$X.ACM.Feature.M.AF8.06B + datos$X.ACM.Feature.F.AF8.06B
+datos$g06C= datos$X.ACM.Feature.M.AF8.06C + datos$X.ACM.Feature.F.AF8.06C
+datos$g01A = datos$X.ACM.Feature.M.AF8.01A + datos$X.ACM.Feature.F.AF8.01A
+datos$g01B = datos$X.ACM.Feature.M.AF8.01B + datos$X.ACM.Feature.F.AF8.01B
+datos$g01C = datos$X.ACM.Feature.M.AF8.01C + datos$X.ACM.Feature.F.AF8.01C
+
+uniq = unique(datos[c("external_gene_name","Peptide","g24A","g24B","g24C","g18A","g18B","g18C","g06A","g06B","g06C","g01A","g01B","g01C")])
+matriz = uniq[c("external_gene_name","g24A","g24B","g24C","g18A","g18B","g18C","g06A","g06B","g06C","g01A","g01B","g01C")]
+
+agrup2 = aggregate(matriz[,c("g24A","g24B","g24C","g18A","g18B","g18C","g06A","g06B","g06C","g01A","g01B","g01C")], by = list(matriz$external_gene_name), FUN = sum)
+
+skin = read.csv("prot_matches_sig_skin.csv", header = T)
+GS = rbind(c(skin$X, agrup2$Group.1))
+dup = GS[duplicated(GS[1,])]
+skin_final = skin[skin$X %in% dup,]
+skin_final = skin_final[order(skin_final$X),]
+phospho_final = agrup2[agrup2$Group.1 %in% dup,]
+phospho_final = phospho_final[order(phospho_final$Group.1),]
+df_final = cbind(phospho_final, skin_final)
+
+```
+
+
+```{r}
+#Normalization
+
+dat = read.csv("protein-peptides.csv", header = T)
+
+dat$g24A = dat$X.Feature.M_24A + dat$X.Feature.F_24A
+dat$g24B = dat$X.Feature.M_24B + dat$X.Feature.F_24B
+dat$g24C = dat$X.Feature.M_24C + dat$X.Feature.F_24C
+dat$g18A = dat$X.Feature.M_18A + dat$X.Feature.F_18A
+dat$g18B = dat$X.Feature.M_18B + dat$X.Feature.F_18B
+dat$g18C = dat$X.Feature.M_18C + dat$X.Feature.F_18C
+dat$g06A = dat$X.Feature.M_06A + dat$X.Feature.F_06A
+dat$g06B = dat$X.Feature.M_06B + dat$X.Feature.F_06B
+dat$g06C= dat$X.Feature.M_06C + dat$X.Feature.F_06C
+dat$g01A = dat$X.Feature.M_01A + dat$X.Feature.F_01A
+dat$g01B = dat$X.Feature.M_01B + dat$X.Feature.F_01B
+dat$g01C = dat$X.Feature.M_01C + dat$X.Feature.F_01C
+
+
+prot24A = dat[dat$g24A > 0,]
+prot24B = dat[dat$g24B > 0,]
+prot24C = dat[dat$g24C > 0,]
+prot18A = dat[dat$g18A > 0,]
+prot18B = dat[dat$g18B > 0,]
+prot18C = dat[dat$g18C > 0,]
+prot06A = dat[dat$g06A > 0,]
+prot06B = dat[dat$g06B > 0,]
+prot06C = dat[dat$g06C > 0,]
+prot01A = dat[dat$g01A > 0,]
+prot01B = dat[dat$g01B > 0,]
+prot01C = dat[dat$g01C > 0,]
+
+
+length(unique((prot24A$Protein.Accession)))
+length(unique((prot24B$Protein.Accession)))
+length(unique((prot24C$Protein.Accession)))
+length(unique((prot18A$Protein.Accession)))
+length(unique((prot01B$Protein.Accession)))
+length(unique((prot18C$Protein.Accession)))
+length(unique((prot06A$Protein.Accession)))
+length(unique((prot06B$Protein.Accession)))
+length(unique((prot06C$Protein.Accession)))
+length(unique((prot01A$Protein.Accession)))
+length(unique((prot01B$Protein.Accession)))
+length(unique((prot01C$Protein.Accession)))
+
+```
+
+
+```{r}
+dat = read.csv("peptides.txt", header = T, sep = "\t")
+
+o1 = dat[!is.na(dat$Experiment.old_1),]
+o2 = dat[!is.na(dat$Experiment.old_2),]
+o3 = dat[!is.na(dat$Experiment.old_3),]
+o4 = dat[!is.na(dat$Experiment.old_4),]
+y1 = dat[!is.na(dat$Experiment.young_1),]
+y2 = dat[!is.na(dat$Experiment.young_2),]
+y3 = dat[!is.na(dat$Experiment.young_3),]
+y4 = dat[!is.na(dat$Experiment.young_4),]
+
+length(unique((o1$Gene.names)))
+length(unique((o2$Gene.names)))
+length(unique((o3$Gene.names)))
+length(unique((o4$Gene.names)))
+length(unique((y1$Gene.names)))
+length(unique((y2$Gene.names)))
+length(unique((y3$Gene.names)))
+length(unique((y4$Gene.names)))
+```
+
+
+```{r}
+proteins = read.csv("kinases.txt", header = T, sep = "\t")
+
+proteins$g24A = proteins$X.Spec.M_24A + proteins$X.Spec.F_24A
+proteins$g24B = proteins$X.Spec.M_24B + proteins$X.Spec.F_24B
+proteins$g24C = proteins$X.Spec.M_24C + proteins$X.Spec.F_24C
+proteins$g18A = proteins$X.Spec.M_18A + proteins$X.Spec.F_18A
+proteins$g18B = proteins$X.Spec.M_18B + proteins$X.Spec.F_18B
+proteins$g18C = proteins$X.Spec.M_18C + proteins$X.Spec.F_18C
+proteins$g06A = proteins$X.Spec.M_06A + proteins$X.Spec.F_06A
+proteins$g06B = proteins$X.Spec.M_06B + proteins$X.Spec.F_06B
+proteins$g06C = proteins$X.Spec.M_06C + proteins$X.Spec.F_06C
+proteins$g01A = proteins$X.Spec.M_01A + proteins$X.Spec.F_01A
+proteins$g01B = proteins$X.Spec.M_01B + proteins$X.Spec.F_01B
+proteins$g01C = proteins$X.Spec.M_01C + proteins$X.Spec.F_01C
+
+matriz = proteins[c("Description","g24A","g24B","g24C","g18A","g18B","g18C","g06A","g06B","g06C","g01A","g01B","g01C")]
+
+
+agrup2 = aggregate(matriz[,c("g24A","g24B","g24C","g18A","g18B","g18C","g06A","g06B","g06C","g01A","g01B","g01C")], by = list(matriz$Description), FUN = sum)
+
+df_final = agrup2[,2:13]
+rownames(df_final) = agrup2[,1]
+
+#write.csv(df_final, file = "kinase_matrix.csv")
+
+groups = c("g24","g24","g24","g18","g18","g18","g06","g06","g06","g01","g01","g01")
+groups = factor(groups, levels = c("g24","g18","g06","g01"))
+design = model.matrix( ~ 0 + groups )
+colnames(design) = c("g24","g18","g06","g01")
+dge = DGEList(counts=df_final);
+dge = calcNormFactors(dge, method = "TMM")  
+v = voom(dge, design)
+fit = lmFit(v, design) 
+
+cont.matrix = makeContrasts(g24vg01 = g24 - g01, g18vg01 = g18-g01, g06vg01 = g06 - g01, g24vg06 = g24 - g06, g18vg06 = g18 - g06, levels=design)
+fit2 = contrasts.fit(fit, cont.matrix)
+fit2 =  eBayes(fit2, trend=FALSE)
+toptable = topTable(fit2, number = "all", confint=TRUE, adjust.method = "BH")
+
+table(toptable$P.Value < 0.05)
+sig_p = toptable[which(toptable$P.Value < 0.05),]
+up = sig_p[which(sig_p$g24vg01 > 0 & sig_p$g18vg01 > 0),]
+
+
+#write.csv(up, file = "sigup_proteins.csv")
+```
+
+
+```{r}
+nombres_prot = read.csv("proteins.csv", header = T)
+nombres_pep = read.csv("only_s.csv", header = T, sep = "\t")
+tabla = read.csv("tabla.txt", header = T, sep = "\t")
+tabla_final = merge(tabla, un, by.x = "Protein.Accession", by.y = "n1")
+nombres = read.csv("nombres.txt", header = F, sep = "\t")
+
+```
